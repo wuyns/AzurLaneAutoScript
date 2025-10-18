@@ -1566,63 +1566,58 @@ def app():
     async def instance_task_status(request):
         data = await request.json()
         name = data.get("name")
-
+    
         if not name:
             return JSONResponse({"error": "missing instance name"}, status_code=400)
-
+    
         manager = ProcessManager.get_manager(name)
         if not manager:
             return JSONResponse({"error": f"instance '{name}' not found"}, status_code=404)
-
+    
         try:
-            # 尝试获取 alas_config
-            alas = getattr(manager, "alas", None)
+            alive = manager.state == 1
+    
+            # 尝试加载 config
             alas_config = getattr(manager, "alas_config", None)
-
-            # 如果 alas_config 不存在，则手动加载
             if alas_config is None:
-                try:
-                    alas_config = load_config(name)
-                    alas_config.load()
-                    alas_config.get_next_task()
-                except Exception as e:
-                    return JSONResponse({
-                        "error": f"failed to load config for instance '{name}': {str(e)}"
-                    }, status_code=500)
-            else:
-                alas_config.load()
-                alas_config.get_next_task()
-
+                alas_config = load_config(name)
+            alas_config.load()
+            alas_config.get_next_task()
+    
             pending_tasks = alas_config.pending_task
             waiting_tasks = alas_config.waiting_task
-
+    
             if len(pending_tasks) >= 1:
-                if alas and getattr(alas, "alive", False):
+                if alive:
                     running_tasks = pending_tasks[:1]
                     pending_tasks = pending_tasks[1:]
                 else:
                     running_tasks = []
             else:
                 running_tasks = []
-
+    
             result = {
                 "ok": True,
                 "instance": name,
                 "running_count": len(running_tasks),
                 "pending_count": len(pending_tasks),
                 "waiting_count": len(waiting_tasks),
-                #"running_tasks": [t.command for t in running_tasks],
-                #"pending_tasks": [t.command for t in pending_tasks],
-                #"waiting_tasks": [t.command for t in waiting_tasks],
-                "alive": getattr(alas, "alive", False),
-                "state": {0: "inactive", 1: "running", 2: "stopped"}.get(manager.state, "unknown"),
+                "alive": alive,
+                "state": {
+                    0: "inactive",
+                    1: "running",
+                    2: "stopped",
+                    3: "warning",
+                    4: "updating",
+                }.get(manager.state, "unknown"),
             }
-
+    
             return JSONResponse(result)
-
+    
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             return JSONResponse({"error": str(e)}, status_code=500)
 
-    app.add_route("/api/tasks", instance_task_status, methods=["POST"]) 
-
+    app.add_route("/api/tasks", instance_task_status, methods=["POST"])
     return app
