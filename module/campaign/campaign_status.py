@@ -1,4 +1,5 @@
 import re
+import time
 
 import cv2
 import numpy as np
@@ -8,6 +9,7 @@ import module.config.server as server
 from module.base.timer import Timer
 from module.base.utils import color_similar, get_color
 from module.campaign.assets import OCR_COIN, OCR_EVENT_PT, OCR_OIL, OCR_OIL_CHECK
+from module.config.config import AzurLaneConfig
 from module.logger import logger
 from module.ocr.ocr import Digit, Ocr
 from module.ui.ui import UI
@@ -55,10 +57,14 @@ class CampaignStatus(UI):
         if res:
             pt = int(res.group(1))
             logger.attr('Event_PT', pt)
-            return pt
         else:
             logger.warning(f'Invalid pt result: {pt}')
-            return 0
+            pt = 0
+
+        if AzurLaneConfig.campaign_stats is not None:
+            AzurLaneConfig.campaign_stats['event_pt'] = pt
+            AzurLaneConfig.campaign_stats['event_pt_updated_at'] = time.time()
+        return pt
 
     def get_coin(self, skip_first_screenshot=True):
         """
@@ -81,6 +87,9 @@ class CampaignStatus(UI):
             if amount >= 100:
                 break
 
+        if AzurLaneConfig.campaign_stats is not None:
+            AzurLaneConfig.campaign_stats['coin'] = amount
+            AzurLaneConfig.campaign_stats['coin_updated_at'] = time.time()
         return amount
 
     def _get_oil(self):
@@ -101,7 +110,11 @@ class CampaignStatus(UI):
             logger.warning(f'Unexpected OCR_OIL_CHECK color')
             ocr = Digit(OCR_OIL, name='OCR_OIL', letter=(247, 247, 247), threshold=128)
 
-        return ocr.ocr(self.device.image)
+        result = ocr.ocr(self.device.image)
+        if AzurLaneConfig.campaign_stats is not None:
+            AzurLaneConfig.campaign_stats['oil'] = result
+            AzurLaneConfig.campaign_stats['oil_updated_at'] = time.time()
+        return result
 
     def get_oil(self, skip_first_screenshot=True):
         """
