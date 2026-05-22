@@ -1,4 +1,7 @@
+import time
+
 import module.config.server as server
+from module.config.config import AzurLaneConfig
 from module.ocr.ocr import Digit, DigitCounter
 from module.private_quarters.assets import *
 from module.shop.shop_status import ShopStatus
@@ -42,6 +45,9 @@ class PQStatus(ShopStatus):
             in: page_shop, medal shop
         """
         amount = OCR_SHOP_GEMS.ocr(self.device.image)
+        if AzurLaneConfig.campaign_stats is not None:
+            AzurLaneConfig.campaign_stats['gem'] = amount
+            AzurLaneConfig.campaign_stats['gem_updated_at'] = time.time()
         return amount
 
     def status_get_daily_count(self):

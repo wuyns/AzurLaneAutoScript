@@ -31,6 +31,13 @@ class ProcessManager:
         self.renderables: List[ConsoleRenderable] = []
         self.renderables_max_length = 400
         self.renderables_reduce_length = 80
+        self._campaign_stats = State.manager.dict()
+        self._campaign_stats.update({
+            'oil': -1, 'oil_updated_at': 0.0,
+            'coin': -1, 'coin_updated_at': 0.0,
+            'gem': -1, 'gem_updated_at': 0.0,
+            'event_pt': -1, 'event_pt_updated_at': 0.0,
+        })
         self._process: Process = None
         self._process_locks: Dict[str, threading.Lock] = {}
         self.thd_log_queue_handler: threading.Thread = None
@@ -46,6 +53,7 @@ class ProcessManager:
                     func,
                     self._renderable_queue,
                     ev,
+                    self._campaign_stats,
                 ),
             )
             self._process.start()
@@ -95,6 +103,38 @@ class ProcessManager:
         logger.info("End of log queue handler loop")
 
     @property
+    def oil(self) -> int:
+        return self._campaign_stats.get('oil', -1)
+
+    @property
+    def oil_updated_at(self) -> float:
+        return self._campaign_stats.get('oil_updated_at', 0.0)
+
+    @property
+    def coin(self) -> int:
+        return self._campaign_stats.get('coin', -1)
+
+    @property
+    def coin_updated_at(self) -> float:
+        return self._campaign_stats.get('coin_updated_at', 0.0)
+
+    @property
+    def gem(self) -> int:
+        return self._campaign_stats.get('gem', -1)
+
+    @property
+    def gem_updated_at(self) -> float:
+        return self._campaign_stats.get('gem_updated_at', 0.0)
+
+    @property
+    def event_pt(self) -> int:
+        return self._campaign_stats.get('event_pt', -1)
+
+    @property
+    def event_pt_updated_at(self) -> float:
+        return self._campaign_stats.get('event_pt_updated_at', 0.0)
+
+    @property
     def alive(self) -> bool:
         if self._process is not None:
             return self._process.is_alive()
@@ -132,7 +172,7 @@ class ProcessManager:
 
     @staticmethod
     def run_process(
-        config_name, func: str, q: queue.Queue, e: threading.Event = None
+        config_name, func: str, q: queue.Queue, e: threading.Event = None, campaign_stats=None
     ) -> None:
         parser = argparse.ArgumentParser()
         parser.add_argument(
@@ -156,6 +196,7 @@ class ProcessManager:
         remove_fake_pil_module()
 
         AzurLaneConfig.stop_event = e
+        AzurLaneConfig.campaign_stats = campaign_stats
         try:
             # Run alas
             if func == "alas":

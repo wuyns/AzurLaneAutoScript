@@ -1,4 +1,7 @@
+import time
+
 import module.config.server as server
+from module.config.config import AzurLaneConfig
 from module.ocr.ocr import Digit
 from module.shop.assets import *
 from module.ui.ui import UI
@@ -44,6 +47,9 @@ class ShopStatus(UI):
             in: page_shop, medal shop
         """
         amount = OCR_SHOP_GEMS.ocr(self.device.image)
+        if AzurLaneConfig.campaign_stats is not None:
+            AzurLaneConfig.campaign_stats['gem'] = amount
+            AzurLaneConfig.campaign_stats['gem_updated_at'] = time.time()
         return amount
 
     def status_get_medal(self):
