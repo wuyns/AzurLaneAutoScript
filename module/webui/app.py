@@ -1481,6 +1481,183 @@ def clearup():
     logger.info("Alas closed.")
 
 
+# ==================== API v1 ====================
+
+_STATE_MAP: Dict[int, str] = {0: "inactive", 1: "running", 2: "stopped", 3: "warning", 4: "updating"}
+
+
+def _state_name(state: int) -> str:
+    return _STATE_MAP.get(state, "unknown")
+
+
+def _ok_response(data: dict) -> JSONResponse:
+    return JSONResponse({"ok": True, "data": data})
+
+
+def _error_response(message: str, status_code: int = 400) -> JSONResponse:
+    return JSONResponse({"ok": False, "error": message}, status_code=status_code)
+
+
+def _get_manager_or_error(name: str):
+    if not name:
+        return None, _error_response("missing instance name", 400)
+    manager = ProcessManager.get_manager(name)
+    if manager is None:
+        return None, _error_response(f"instance '{name}' not found", 404)
+    return manager, None
+
+
+async def api_list_instances(request):
+    instances = [
+        {
+            "name": name,
+            "state": _state_name(ProcessManager.get_manager(name).state),
+            "alive": ProcessManager.get_manager(name).alive,
+        }
+        for name in alas_instance()
+    ]
+    return _ok_response({"instances": instances, "total": len(instances)})
+
+
+async def api_get_instance(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    alive = manager.state == 1
+    config = load_config(name)
+    config.load()
+    config.get_next_task()
+
+    running_count = 1 if alive and config.pending_task else 0
+    pending_count = len(config.pending_task) - running_count
+    waiting_count = len(config.waiting_task)
+
+    return _ok_response({
+        "name": name,
+        "state": _state_name(manager.state),
+        "alive": manager.alive,
+        "task_summary": {
+            "running": running_count,
+            "pending": pending_count,
+            "waiting": waiting_count,
+        },
+    })
+
+
+async def api_start_instance(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    manager.start(None, updater.event)
+    return _ok_response({
+        "name": name,
+        "state": _state_name(manager.state),
+    })
+
+
+async def api_stop_instance(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    manager.stop()
+    return _ok_response({
+        "name": name,
+        "state": _state_name(manager.state),
+    })
+
+
+async def api_get_instance_tasks(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    alive = manager.state == 1
+    config = load_config(name)
+    config.load()
+    config.get_next_task()
+
+    def _task_to_dict(func) -> dict:
+        return {
+            "command": func.command,
+            "enabled": func.enable,
+            "next_run": func.next_run.isoformat() if func.next_run else None,
+        }
+
+    pending = config.pending_task
+    if alive and pending:
+        running_tasks = [_task_to_dict(pending[0])]
+        pending_tasks = [_task_to_dict(t) for t in pending[1:]]
+    else:
+        running_tasks = []
+        pending_tasks = [_task_to_dict(t) for t in pending]
+
+    waiting_tasks = [_task_to_dict(t) for t in config.waiting_task]
+
+    return _ok_response({
+        "name": name,
+        "tasks": {
+            "running": running_tasks,
+            "pending": pending_tasks,
+            "waiting": waiting_tasks,
+        },
+    })
+
+
+async def api_get_instance_stats(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    def _stat(value: int, updated_at: float) -> dict:
+        available = value >= 0
+        return {
+            "value": value if available else None,
+            "available": available,
+            "updated_at": datetime.fromtimestamp(updated_at).isoformat() if updated_at > 0 else None,
+        }
+
+    return _ok_response({
+        "name": name,
+        "oil": _stat(manager.oil, manager.oil_updated_at),
+        "coin": _stat(manager.coin, manager.coin_updated_at),
+        "gem": _stat(manager.gem, manager.gem_updated_at),
+        "event_pt": _stat(manager.event_pt, manager.event_pt_updated_at),
+    })
+
+
+async def api_get_instance_tasks_enabled(request):
+    name = request.path_params.get("name", "")
+    manager, error = _get_manager_or_error(name)
+    if error:
+        return error
+
+    config = load_config(name)
+    config_data = config.read_file(name)
+    all_tasks = list(config_data.keys())
+
+    tasks_filter = request.query_params.get("tasks", "")
+    if tasks_filter:
+        requested = [t.strip() for t in tasks_filter.split(",") if t.strip()]
+        tasks = {t: bool(deep_get(config_data, [t, "Scheduler", "Enable"], False))
+                 for t in requested if t in all_tasks}
+    else:
+        tasks = {t: bool(deep_get(config_data, [t, "Scheduler", "Enable"], False))
+                 for t in all_tasks}
+
+    return _ok_response({
+        "name": name,
+        "tasks": tasks,
+    })
+
+
 def app():
     parser = argparse.ArgumentParser(description="Alas web service")
     parser.add_argument(
@@ -1555,98 +1732,11 @@ def app():
         on_shutdown=[clearup],
     )
 
-    async def control_instance(request):
-        data = await request.json()
-        name = data.get("name")
-        action = data.get("action")
-
-        if not name:
-            return JSONResponse({"error": "missing instance name"}, status_code=400)
-
-        manager = ProcessManager.get_manager(name)
-        if not manager:
-            return JSONResponse({"error": f"instance '{name}' not found"}, status_code=404)
-
-        if action == "start":
-            manager.start(None, updater.event)
-            state = "starting"
-        elif action == "stop":
-            manager.stop()
-            state = "stopping"
-        elif action == "status":
-            """
-            Args:
-                state (int):
-                    1 (running)
-                    2 (not running)
-                    3 (warning, stop unexpectedly)
-                    4 (stop for update)
-                    0 (hide)
-                    -1 (*state not changed)
-            """
-            state = {1: "running", 2: "not running", 3: "warning", 4: "stop for update", 0: "hide"}.get(manager.state, "unknown")
-        else:
-            return JSONResponse({"error": f"invalid action: {action}"}, status_code=400)
-
-        return JSONResponse({"ok": True, "instance": name, "action": action, "state": state})
-
-    app.add_route("/api/control", control_instance, methods=["POST"])
-
-    async def instance_task_status(request):
-        data = await request.json()
-        name = data.get("name")
-    
-        if not name:
-            return JSONResponse({"error": "missing instance name"}, status_code=400)
-    
-        manager = ProcessManager.get_manager(name)
-        if not manager:
-            return JSONResponse({"error": f"instance '{name}' not found"}, status_code=404)
-    
-        try:
-            alive = manager.state == 1
-    
-            # 尝试加载 config
-            alas_config = getattr(manager, "alas_config", None)
-            if alas_config is None:
-                alas_config = load_config(name)
-            alas_config.load()
-            alas_config.get_next_task()
-    
-            pending_tasks = alas_config.pending_task
-            waiting_tasks = alas_config.waiting_task
-    
-            if len(pending_tasks) >= 1:
-                if alive:
-                    running_tasks = pending_tasks[:1]
-                    pending_tasks = pending_tasks[1:]
-                else:
-                    running_tasks = []
-            else:
-                running_tasks = []
-    
-            result = {
-                "ok": True,
-                "instance": name,
-                "running_count": len(running_tasks),
-                "pending_count": len(pending_tasks),
-                "waiting_count": len(waiting_tasks),
-                "alive": alive,
-                "state": {
-                    0: "inactive",
-                    1: "running",
-                    2: "stopped",
-                    3: "warning",
-                    4: "updating",
-                }.get(manager.state, "unknown"),
-            }
-    
-            return JSONResponse(result)
-    
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return JSONResponse({"error": str(e)}, status_code=500)
-
-    app.add_route("/api/tasks", instance_task_status, methods=["POST"])
+    app.add_route("/api/v1/instances", api_list_instances, methods=["GET"])
+    app.add_route("/api/v1/instances/{name}", api_get_instance, methods=["GET"])
+    app.add_route("/api/v1/instances/{name}/start", api_start_instance, methods=["POST"])
+    app.add_route("/api/v1/instances/{name}/stop", api_stop_instance, methods=["POST"])
+    app.add_route("/api/v1/instances/{name}/tasks", api_get_instance_tasks, methods=["GET"])
+    app.add_route("/api/v1/instances/{name}/stats", api_get_instance_stats, methods=["GET"])
+    app.add_route("/api/v1/instances/{name}/tasks/enabled", api_get_instance_tasks_enabled, methods=["GET"])
     return app
